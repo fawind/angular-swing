@@ -6,13 +6,18 @@ angular
         return {
             restrict: 'A',
             scope: {},
-            controller: function () {
+            controller: function ($scope) {
                 var stack;
 
                 stack = Swing.Stack();
+                stack.cards = [];
+
+                $scope.$emit('stack-init', stack);
 
                 this.add = function (cardElement) {
-                    return stack.createCard(cardElement);
+                    var card = stack.createCard(cardElement);
+                    stack.cards.push(card);
+                    return card;
                 };
             }
         };

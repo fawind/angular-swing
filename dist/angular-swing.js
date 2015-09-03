@@ -1,8 +1,3 @@
-/**
- * @version 1.0.0
- * @link https://github.com/gajus/angular-swing for the canonical source repository
- * @license https://github.com/gajus/angular-swing/blob/master/LICENSE BSD 3-Clause
- */
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);throw new Error("Cannot find module '"+o+"'")}var f=n[o]={exports:{}};t[o][0].call(f.exports,function(e){var n=t[o][1][e];return s(n?n:e)},f,f.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
 // shim for using process in browser
 
@@ -3569,19 +3564,32 @@ function Sister () {
         events = {};
 
     /**
-     * @name listener
+     * @name handler
      * @function
      * @param {Object} data Event data.
      */
 
     /**
      * @param {String} name Event name.
-     * @param {listener} listener
+     * @param {handler} handler
+     * @return {listener}
      */
-    sister.on = function (name, listener) {
+    sister.on = function (name, handler) {
+        var listener = {name: name, handler: handler};
         events[name] = events[name] || [];
         events[name].unshift(listener);
-        return this;
+        return listener;
+    };
+
+    /**
+     * @param {listener}
+     */
+    sister.off = function (listener) {
+        var index = events[listener.name].indexOf(listener);
+
+        if (index != -1) {
+            events[listener.name].splice(index, 1);
+        }
     };
 
     /**
@@ -3595,7 +3603,7 @@ function Sister () {
         if (listeners) {
             i = listeners.length;
             while (i--) {
-                listeners[i](data);
+                listeners[i].handler(data);
             }
         }
     };
@@ -3659,12 +3667,15 @@ module.exports = get;
 module.exports.dash = dashedPrefix;
 
 },{}],6:[function(require,module,exports){
+(function (global){
 var Card,
     Sister = require('sister'),
     Hammer = require('hammerjs'),
     rebound = require('rebound'),
     vendorPrefix = require('vendor-prefix'),
-    util = {};
+    dom = require('./dom.js'),
+    util = {},
+    _isTouchDevice;
 
 /**
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/random
@@ -3677,20 +3688,37 @@ util.randomInt = function (min, max) {
  * @param {Stack} stack
  * @param {HTMLElement} targetElement
  */
-Card = function (stack, targetElement) {
-    var card = {},
-        config = Card.config(stack.config()),
-        targetElementWidth = targetElement.offsetWidth,
-        targetElementHeight = targetElement.offsetHeight,
-        eventEmitter = Sister(),
-        springSystem = stack.springSystem(),
-        springSnapBack = springSystem.createSpring(250, 10),
-        springThrowOut = springSystem.createSpring(500, 20),
-        lastThrow = {},
-        lastTranslate = {x: 0, y: 0},
+Card = function Card (stack, targetElement) {
+    var card,
+        config,
+        eventEmitter,
+        springSystem,
+        springThrowIn,
+        springThrowOut,
+        lastThrow,
+        lastTranslate,
         throwOutDistance,
         onSpringUpdate,
         throwWhere;
+
+    if (!(this instanceof Card)) {
+        return new Card(stack, targetElement);
+    }
+
+    card = this;
+    config = Card.config(stack.config());
+    eventEmitter = Sister();
+    springSystem = stack.springSystem();
+    springThrowIn = springSystem.createSpring(250, 10);
+    springThrowOut = springSystem.createSpring(500, 20);
+    lastThrow = {};
+    lastTranslate = {x: 0, y: 0};
+
+    springThrowIn.setRestSpeedThreshold(0.05);
+    springThrowIn.setRestDisplacementThreshold(0.05);
+
+    springThrowOut.setRestSpeedThreshold(0.05);
+    springThrowOut.setRestDisplacementThreshold(0.05);
 
     throwOutDistance = config.throwOutDistance(config.minThrowOutDistance, config.maxThrowOutDistance);
 
@@ -3702,7 +3730,7 @@ Card = function (stack, targetElement) {
 
     Card.appendToParent(targetElement);
 
-    targetElement.addEventListener('mousedown', function () {
+    eventEmitter.on('_panstart', function () {
         Card.appendToParent(targetElement);
 
         eventEmitter.trigger('dragstart', {
@@ -3710,25 +3738,25 @@ Card = function (stack, targetElement) {
         });
     });
 
-    mc.on('panmove', function (e) {
+    eventEmitter.on('_panmove', function (e) {
         var x = lastTranslate.x + e.deltaX,
             y = lastTranslate.y + e.deltaY,
-            r = config.rotation(x, y, targetElementWidth, targetElementHeight, config.maxRotation);
+            r = config.rotation(x, y, targetElement, config.maxRotation);
 
-        Card.transform(targetElement, x, y, r);
+        config.transform(targetElement, x, y, r);
 
         eventEmitter.trigger('dragmove', {
             target: targetElement,
-            throwOutConfidence: Card.throwOutConfidence(x, targetElementWidth),
+            throwOutConfidence: config.throwOutConfidence(x, targetElement),
             throwDirection: x < 0 ? Card.DIRECTION_LEFT : Card.DIRECTION_RIGHT
         });
     });
 
-    mc.on('panend', function(e) {
+    eventEmitter.on('_panend', function (e) {
         var x = lastTranslate.x + e.deltaX,
             y = lastTranslate.y + e.deltaY;
 
-        if (config.isThrowOut(x, targetElementWidth)) {
+        if (config.isThrowOut(x, targetElement, config.throwOutConfidence(x, targetElement))) {
             card.throwOut(x, y);
         } else {
             card.throwIn(x, y);
@@ -3739,13 +3767,58 @@ Card = function (stack, targetElement) {
         });
     });
 
-    springSnapBack.addListener({
+    // "mousedown" event fires late on touch enabled devices, thus listening
+    // to the touchstart event for touch enabled devices and mousedown otherwise.
+    if (_isTouchDevice()) {
+         targetElement.addEventListener('touchstart', function () {
+                eventEmitter.trigger('_panstart');
+        });
+
+        // Disable scrolling while dragging the element on the touch enabled devices.
+        // @see http://stackoverflow.com/a/12090055/368691
+        (function () {
+            var dragging;
+
+            targetElement.addEventListener('touchstart', function () {
+                dragging = true;
+            });
+
+            targetElement.addEventListener('touchend', function () {
+                dragging = false;
+            });
+
+            global.addEventListener('touchmove', function (e) {
+                if (dragging) {
+                    e.preventDefault();
+                }
+            });
+        } ());
+    } else {
+        targetElement.addEventListener('mousedown', function () {
+            eventEmitter.trigger('_panstart');
+        });
+    }
+
+    mc.on('panmove', function (e) {
+        eventEmitter.trigger('_panmove', e);
+    });
+
+    mc.on('panend', function(e) {
+        eventEmitter.trigger('_panend', e);
+    });
+
+    springThrowIn.addListener({
         onSpringUpdate: function (spring) {
             var value = spring.getCurrentValue(),
                 x = rebound.MathUtil.mapValueInRange(value, 0, 1, lastThrow.fromX, 0),
                 y = rebound.MathUtil.mapValueInRange(value, 0, 1, lastThrow.fromY, 0);
 
             onSpringUpdate(x, y);
+        },
+        onSpringAtRest: function () {
+            eventEmitter.trigger('throwinend', {
+                target: targetElement
+            });
         }
     });
 
@@ -3755,7 +3828,12 @@ Card = function (stack, targetElement) {
                 x = rebound.MathUtil.mapValueInRange(value, 0, 1, lastThrow.fromX, throwOutDistance * lastThrow.direction),
                 y = lastThrow.fromY;
 
-            onSpringUpdate(x, y);            
+            onSpringUpdate(x, y);    
+        },
+        onSpringAtRest: function () {
+            eventEmitter.trigger('throwoutend', {
+                target: targetElement
+            });
         }
     });
 
@@ -3766,7 +3844,7 @@ Card = function (stack, targetElement) {
      * @param {Number} y
      */
     onSpringUpdate = function (x, y) {
-        var r = config.rotation(x, y, targetElementWidth, targetElementHeight, config.maxRotation);
+        var r = config.rotation(x, y, targetElement, config.maxRotation);
 
         lastTranslate.x = x;
         lastTranslate.y = y;
@@ -3778,6 +3856,7 @@ Card = function (stack, targetElement) {
      * Alias
      */
     card.on = eventEmitter.on;
+    card._trigger = eventEmitter.trigger;
 
     /**
      * Throws a card into the stack from an arbitrary position.
@@ -3805,8 +3884,10 @@ Card = function (stack, targetElement) {
      */
     card.destroy = function () {
         mc.destroy();
-        springSnapBack.destroy();
+        springThrowIn.destroy();
         springThrowOut.destroy();
+
+        stack._destroyCard(card);
     };
 
     /**
@@ -3820,7 +3901,7 @@ Card = function (stack, targetElement) {
         lastThrow.direction = lastThrow.fromX < 0 ? Card.DIRECTION_LEFT : Card.DIRECTION_RIGHT;
 
         if (where == Card.THROW_IN) {
-            springSnapBack.setCurrentValue(0).setAtRest().setEndValue(1);
+            springThrowIn.setCurrentValue(0).setAtRest().setEndValue(1);
 
             eventEmitter.trigger('throwin', {
                 target: targetElement,
@@ -3887,7 +3968,7 @@ Card.config = function (config) {
  * @return {null}
  */
 Card.transform = function (element, x, y, r) {
-    element.style[vendorPrefix('transform')] = 'translate(' + x + 'px, ' + y + 'px) rotate(' + r + 'deg)';
+    element.style[vendorPrefix('transform')] = 'translate3d(0, 0, 0) translate(' + x + 'px, ' + y + 'px) rotate(' + r + 'deg)';
 };
 
 /**
@@ -3902,8 +3983,10 @@ Card.transform = function (element, x, y, r) {
  */
 Card.appendToParent = function (element) {
     var parent = element.parentNode,
-        siblings = parent.querySelectorAll('li'),
-        targetIndex = [].slice.apply(siblings).indexOf(element);
+        siblings = siblings = dom.elementChildren(parent),
+        targetIndex = siblings.indexOf(element);
+
+    console.log(siblings);
 
     if (targetIndex + 1 != siblings.length) {
         parent.removeChild(element);
@@ -3917,11 +4000,11 @@ Card.appendToParent = function (element) {
  * Ration of the absolute distance from the original card position and element width.
  * 
  * @param {Number} offset Distance from the dragStart.
- * @param {Number} elementWidth Width of the element being dragged.
+ * @param {HTMLElement} element Element.
  * @return {Number}
  */
-Card.throwOutConfidence = function (offset, elementWidth) {
-    return Math.min(Math.abs(offset) / elementWidth, 1);
+Card.throwOutConfidence = function (offset, element) {
+    return Math.min(Math.abs(offset) / element.offsetWidth, 1);
 };
 
 /**
@@ -3930,11 +4013,12 @@ Card.throwOutConfidence = function (offset, elementWidth) {
  * Element is considered to be thrown out when throwOutConfidence is equal to 1.
  * 
  * @param {Number} offset Distance from the dragStart.
- * @param {Number} elementWidth Width of the element being dragged.
+ * @param {HTMLElement} element Element.
+ * @param {Number} throwOutConfidence config.throwOutConfidence
  * @return {Boolean}
  */
-Card.isThrowOut = function (offset, elementWidth) {
-    return Card.throwOutConfidence(offset, elementWidth) == 1;
+Card.isThrowOut = function (offset, element, throwOutConfidence) {
+    return throwOutConfidence == 1;
 };
 
 /**
@@ -3954,17 +4038,23 @@ Card.throwOutDistance = function (minThrowOutDistance, maxThrowOutDistance) {
  * 
  * @param {Number} x Horizontal offset from the startDrag.
  * @param {Number} y Vertical offset from the startDrag.
- * @param {Number} elementWidth
- * @param {Number} elementHeight
+ * @param {HTMLElement} element Element.
  * @param {Number} maxRotation
  * @return {Number} Rotation angle expressed in degrees.
  */
-Card.rotation = function (x, y, elementWidth, elementHeight, maxRotation) {
-    var horizontalOffset = Math.min(Math.max(x/elementWidth, -1), 1),
+Card.rotation = function (x, y, element, maxRotation) {
+    var horizontalOffset = Math.min(Math.max(x/element.offsetWidth, -1), 1),
         verticalOffset = (y > 0 ? 1 : -1) * Math.min(Math.abs(y)/100, 1),
         rotation = horizontalOffset * verticalOffset * maxRotation;
 
     return rotation;
+};
+
+/**
+ * @see http://stackoverflow.com/questions/4817029/whats-the-best-way-to-detect-a-touch-screen-device-using-javascript/4819886#4819886
+ */
+_isTouchDevice = function () {
+    return 'ontouchstart' in window || navigator.msMaxTouchPoints;
 };
 
 Card.DIRECTION_LEFT = -1;
@@ -3974,7 +4064,33 @@ Card.THROW_IN = 'in';
 Card.THROW_OUT = 'out';
 
 module.exports = Card;
-},{"hammerjs":2,"rebound":3,"sister":4,"vendor-prefix":5}],7:[function(require,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./dom.js":7,"hammerjs":2,"rebound":3,"sister":4,"vendor-prefix":5}],7:[function(require,module,exports){
+var dom = {};
+
+/**
+ * Return direct children elements.
+ *
+ * @see http://stackoverflow.com/a/27102446/368691
+ * @param {HTMLElement}
+ * @return {Array}
+ */
+dom.elementChildren = function (element) {
+    var childNodes = element.childNodes,
+        children = [],
+        i = childNodes.length;
+
+    while (i--) {
+        if (childNodes[i].nodeType == 1) {
+            children.unshift(childNodes[i]);
+        }
+    }
+
+    return children;
+}
+
+module.exports = dom;
+},{}],8:[function(require,module,exports){
 var Stack,
     Sister = require('sister'),
     rebound = require('rebound'),
@@ -3983,10 +4099,20 @@ var Stack,
 /**
  * @param {Object} config
  */
-Stack = function (config) {
-    var stack = {},
-        springSystem = new rebound.SpringSystem(),
-        eventEmitter = Sister();
+Stack = function Stack (config) {
+    var stack,
+        springSystem,
+        eventEmitter,
+        index;
+
+    if (!(this instanceof Stack)) {
+        return new Stack(config);
+    }
+
+    stack = this;
+    springSystem = new rebound.SpringSystem();
+    eventEmitter = Sister();
+    index = [];
 
     /**
      * Get the configuration object.
@@ -4017,28 +4143,75 @@ Stack = function (config) {
     };
 
     /**
+     * Creates an instance of Card and associates it with the element.
+     * 
      * @return {Card}
      */
-    stack.createCard = function (targetElement) {
-        var card = new Card(this, targetElement);
+    stack.createCard = function (element) {
+        var card = Card(this, element),
+            events = [
+                'throwout',
+                'throwoutend',
+                'throwoutleft',
+                'throwoutright',
+                'throwin',
+                'throwinend',
+                'dragstart',
+                'dragmove',
+                'dragend'
+            ];
 
         // Proxy Card events to the Stack.
-        card.on('throwout', eventEmitter.trigger.bind(null, 'throwout'));
-        card.on('throwoutleft', eventEmitter.trigger.bind(null, 'throwoutleft'));
-        card.on('throwoutright', eventEmitter.trigger.bind(null, 'throwoutright'));
-        card.on('throwin', eventEmitter.trigger.bind(null, 'throwin'));
-        card.on('dragstart', eventEmitter.trigger.bind(null, 'dragstart'));
-        card.on('dragmove', eventEmitter.trigger.bind(null, 'dragmove'));
-        card.on('dragend', eventEmitter.trigger.bind(null, 'dragend'));
+        events.forEach(function (name) {
+            card.on(name, function (data) {
+                eventEmitter.trigger(name, data);
+            });
+        });
+
+        index.push({
+            element: element,
+            card: card
+        });
 
         return card;
+    };
+
+    /**
+     * Returns card associated with an element.
+     *
+     * @param {HTMLElement} element
+     * @return {Card|null}
+     */
+    stack.getCard = function (element) {
+        var j = index.length;
+        while (j--) {
+            if (index[j].element === element) {
+                return index[j].card;
+            }
+        }
+        return null;
+    };
+
+    /**
+     * @param {Card} card
+     */
+    stack._destroyCard = function (card) {
+        var j = index.length;
+        while (j--) {
+            if (index[j].card === card) {
+                index.splice(j, 1);
+
+                break;
+            }
+        }
     };
 
     return stack;
 };
 
 module.exports = Stack;
-},{"./card.js":6,"rebound":3,"sister":4}],8:[function(require,module,exports){
+
+},{"./card.js":6,"rebound":3,"sister":4}],9:[function(require,module,exports){
 (function (global){
 var Stack = require('./stack.js'),
     Card = require('./card.js');
@@ -4055,7 +4228,7 @@ module.exports = {
     Card: Card
 };
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./card.js":6,"./stack.js":7}],9:[function(require,module,exports){
+},{"./card.js":6,"./stack.js":8}],10:[function(require,module,exports){
 var Swing = require('swing');
 
 angular
@@ -4064,13 +4237,18 @@ angular
         return {
             restrict: 'A',
             scope: {},
-            controller: function () {
+            controller: function ($scope) {
                 var stack;
 
                 stack = Swing.Stack();
+                stack.cards = [];
+
+                $scope.$emit('stack-init', stack);
 
                 this.add = function (cardElement) {
-                    return stack.createCard(cardElement);
+                    var card = stack.createCard(cardElement);
+                    stack.cards.push(card);
+                    return card;
                 };
             }
         };
@@ -4103,4 +4281,5 @@ angular
             }
         };
     });
-},{"swing":8}]},{},[9])
+
+},{"swing":9}]},{},[10])
