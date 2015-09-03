@@ -4,6 +4,7 @@ var karma = require('karma').server,
     header = require('gulp-header'),
     rename = require('gulp-rename'),
     uglify = require('gulp-uglify'),
+    stripDebug = require('gulp-strip-debug'),
     browserify = require('gulp-browserify'),
     fs = require('fs'),
     del = require('del'),
@@ -38,6 +39,7 @@ gulp.task('version', ['bundle'], function () {
     gulp
         .src('./dist/' + name + '.js')
         .pipe(header('/**\n * @version <%= version %>\n * @link https://github.com/gajus/' + name + ' for the canonical source repository\n * @license https://github.com/gajus/' + name + '/blob/master/LICENSE BSD 3-Clause\n */\n', {version: pkg.version}))
+        .pipe(stripDebug())
         .pipe(gulp.dest('./dist/'))
         .pipe(uglify())
         .pipe(rename(name + '.min.js'))
